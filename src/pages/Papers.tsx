@@ -1,17 +1,22 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { FileText, Upload, Trash, Search, FileUp, File } from "lucide-react";
+import { FileText, Trash, Search, File, Upload, AlertCircle } from "lucide-react";
 import { FileUploader } from "@/components/FileUploader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/components/ui/use-toast";
+import { supabase } from "@/lib/supabase";
+import { v4 as uuidv4 } from "uuid";
+import { useNavigate } from "react-router-dom";
 
 type PaperFile = {
   id: string;
   name: string;
   size: number;
   uploaded: Date;
+  processing?: boolean;
   tags?: string[];
 }
 
@@ -19,26 +24,192 @@ export default function Papers() {
   const [papers, setPapers] = useState<PaperFile[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [totalStorage, setTotalStorage] = useState<number>(0); // in bytes
-
-  const handleFilesChange = (files: File[]) => {
-    const newPapers = files.map(file => ({
-      id: Math.random().toString(36).substring(2, 9),
-      name: file.name,
-      size: file.size,
-      uploaded: new Date()
-    }));
-    
-    const newTotalStorage = files.reduce((acc, file) => acc + file.size, 0);
-    setTotalStorage(prevStorage => prevStorage + newTotalStorage);
-    setPapers(prevPapers => [...prevPapers, ...newPapers]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  
+  // Fetch user's papers on component mount
+  useEffect(() => {
+    fetchPapers();
+  }, []);
+  
+  const fetchPapers = async () => {
+    try {
+      setLoading(true);
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        throw sessionError;
+      }
+      
+      if (!sessionData.session) {
+        navigate("/login");
+        return;
+      }
+      
+      const { data, error } = await supabase
+        .from('papers')
+        .select('*')
+        .order('created_at', { ascending: false });
+        
+      if (error) {
+        throw error;
+      }
+      
+      // Calculate total storage
+      let storageTotal = 0;
+      
+      const formattedPapers: PaperFile[] = data.map(paper => {
+        storageTotal += paper.size || 0;
+        return {
+          id: paper.id,
+          name: paper.name,
+          size: paper.size || 0,
+          uploaded: new Date(paper.created_at),
+          tags: paper.tags
+        };
+      });
+      
+      setPapers(formattedPapers);
+      setTotalStorage(storageTotal);
+    } catch (error) {
+      console.error("Error fetching papers:", error);
+      toast({
+        variant: "destructive",
+        title: "Error fetching papers",
+        description: error.message || "Failed to load your research papers."
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const deletePaper = (id: string) => {
-    const paperToDelete = papers.find(paper => paper.id === id);
-    if (paperToDelete) {
+  const handleFilesChange = async (files: File[]) => {
+    if (files.length === 0) return;
+    
+    setUploading(true);
+    
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        navigate("/login");
+        return;
+      }
+      
+      const user = sessionData.session.user;
+      const uploadPromises = files.map(async (file) => {
+        const fileId = uuidv4();
+        const fileName = file.name;
+        
+        // First upload the file to storage
+        const { error: uploadError } = await supabase.storage
+          .from('papers')
+          .upload(`${user.id}/${fileId}`, file);
+          
+        if (uploadError) {
+          throw uploadError;
+        }
+        
+        // Temporarily add to UI
+        const newPaper: PaperFile = {
+          id: fileId,
+          name: fileName,
+          size: file.size,
+          uploaded: new Date(),
+          processing: true
+        };
+        
+        setPapers(prev => [newPaper, ...prev]);
+        setTotalStorage(prev => prev + file.size);
+        
+        // Now process the PDF to extract text and create embeddings
+        const { error: processError } = await supabase.functions.invoke('process-pdf', {
+          body: { fileId, fileName }
+        });
+        
+        if (processError) {
+          throw processError;
+        }
+        
+        return { id: fileId, success: true };
+      });
+      
+      await Promise.all(uploadPromises);
+      
+      toast({
+        title: "Papers uploaded successfully",
+        description: `${files.length} ${files.length === 1 ? 'paper' : 'papers'} uploaded and processed.`
+      });
+      
+      // Refresh the papers list to get the updated data
+      fetchPapers();
+    } catch (error) {
+      console.error("Error uploading papers:", error);
+      toast({
+        variant: "destructive",
+        title: "Error uploading papers",
+        description: error.message || "Failed to upload your research papers."
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const deletePaper = async (id: string) => {
+    try {
+      const paperToDelete = papers.find(paper => paper.id === id);
+      if (!paperToDelete) return;
+      
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        navigate("/login");
+        return;
+      }
+      
+      // Delete from storage
+      const { error: storageError } = await supabase.storage
+        .from('papers')
+        .remove([`${sessionData.session.user.id}/${id}`]);
+        
+      if (storageError) {
+        throw storageError;
+      }
+      
+      // Delete from database
+      const { error: dbError } = await supabase
+        .from('papers')
+        .delete()
+        .eq('id', id);
+        
+      if (dbError) {
+        throw dbError;
+      }
+      
+      // Update UI
       setTotalStorage(prevStorage => prevStorage - paperToDelete.size);
       setPapers(prevPapers => prevPapers.filter(paper => paper.id !== id));
+      
+      toast({
+        title: "Paper deleted",
+        description: `"${paperToDelete.name}" has been removed.`
+      });
+    } catch (error) {
+      console.error("Error deleting paper:", error);
+      toast({
+        variant: "destructive",
+        title: "Error deleting paper",
+        description: error.message || "Failed to delete the research paper."
+      });
     }
+  };
+
+  const navigateToInsights = () => {
+    navigate("/insights", { 
+      state: { 
+        selectedPapers: papers.map(p => p.id) 
+      } 
+    });
   };
 
   const filteredPapers = papers.filter(paper => 
@@ -90,7 +261,12 @@ export default function Papers() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {filteredPapers.length > 0 ? (
+              {loading ? (
+                <div className="py-12 text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+                  <p className="mt-4 text-muted-foreground">Loading your papers...</p>
+                </div>
+              ) : filteredPapers.length > 0 ? (
                 <div className="space-y-2">
                   {filteredPapers.map((paper) => (
                     <div key={paper.id} className="flex items-center justify-between p-3 rounded-md border">
@@ -100,6 +276,12 @@ export default function Papers() {
                           <span className="font-medium">{paper.name}</span>
                           <div className="text-xs text-muted-foreground">
                             {formatBytes(paper.size)} • Uploaded {paper.uploaded.toLocaleDateString()}
+                            {paper.processing && (
+                              <span className="ml-2 text-amber-500 flex items-center">
+                                <AlertCircle className="h-3 w-3 mr-1" />
+                                Processing
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -126,6 +308,7 @@ export default function Papers() {
                   variant="outline" 
                   className="gap-2"
                   disabled={papers.length === 0}
+                  onClick={navigateToInsights}
                 >
                   <File className="h-4 w-4" />
                   Analyze Papers
@@ -149,7 +332,15 @@ export default function Papers() {
                 maxSize={50}
                 acceptedFileTypes={['.pdf']}
                 maxFiles={20}
+                className={uploading ? "opacity-50 pointer-events-none" : ""}
               />
+              
+              {uploading && (
+                <div className="mt-4 flex items-center justify-center gap-2 text-primary">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-current"></div>
+                  <span>Uploading and processing your papers...</span>
+                </div>
+              )}
             </CardContent>
             <CardFooter className="text-sm text-muted-foreground border-t pt-4">
               Upload PDF files of your research papers to include them in your knowledge base
