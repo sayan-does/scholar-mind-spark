@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -46,14 +45,19 @@ export default function Insights() {
   // Load papers and user data
   useEffect(() => {
     const checkAuth = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
+      try {
+        const response = await fetch('/api/auth/session');
+        if (!response.ok) {
+          navigate("/login");
+          return;
+        }
+        
+        fetchPapers();
+        fetchStorageUsage();
+      } catch (error) {
+        console.error('Auth check failed:', error);
         navigate("/login");
-        return;
       }
-      
-      fetchPapers();
-      fetchStorageUsage();
     };
     
     checkAuth();
@@ -68,15 +72,10 @@ export default function Insights() {
 
   const fetchPapers = async () => {
     try {
-      const { data, error } = await supabase
-        .from('papers')
-        .select('id, name')
-        .order('created_at', { ascending: false });
-        
-      if (error) {
-        throw error;
-      }
+      const response = await fetch('/api/papers');
+      if (!response.ok) throw new Error('Failed to fetch papers');
       
+      const data = await response.json();
       setPapers(data);
     } catch (error) {
       console.error("Error fetching papers:", error);
@@ -90,42 +89,11 @@ export default function Insights() {
   
   const fetchStorageUsage = async () => {
     try {
-      // Get paper count and size
-      const { data: paperData, error: paperError } = await supabase
-        .from('papers')
-        .select('size');
-        
-      if (paperError) throw paperError;
+      const response = await fetch('/api/storage/usage');
+      if (!response.ok) throw new Error('Failed to fetch storage usage');
       
-      // Get notes size
-      const { data: noteData, error: noteError } = await supabase
-        .from('notes')
-        .select('content');
-        
-      let noteSize = 0;
-      if (!noteError && noteData && noteData.length > 0) {
-        noteSize = new TextEncoder().encode(noteData[0]?.content || "").length;
-      }
-      
-      // Get whiteboard size
-      const { data: whiteboardData, error: whiteboardError } = await supabase
-        .from('whiteboards')
-        .select('content');
-        
-      let whiteboardSize = 0;
-      if (!whiteboardError && whiteboardData && whiteboardData.length > 0) {
-        whiteboardSize = new TextEncoder().encode(whiteboardData[0]?.content || "").length;
-      }
-      
-      // Calculate total paper size
-      const paperSize = paperData?.reduce((acc, paper) => acc + (paper.size || 0), 0) || 0;
-      
-      setStorageUsage({
-        papers: paperData?.length || 0,
-        notes: noteData?.length || 0,
-        whiteboard: whiteboardData?.length || 0,
-        total: paperSize + noteSize + whiteboardSize
-      });
+      const data = await response.json();
+      setStorageUsage(data);
     } catch (error) {
       console.error("Error fetching storage usage:", error);
     }
@@ -153,38 +121,20 @@ export default function Insights() {
     setResponse(null);
     
     try {
-      const { data, error } = await supabase.functions.invoke('stressy-bot', {
-        body: {
-          query: "Generate research insights based on the provided materials. Identify connections between concepts, potential research gaps, and promising research directions.",
-          context: {
-            papers: selectedPapers.length > 0 ? selectedPapers : undefined,
-            notes: includeNotes ? true : undefined,
-            whiteboard: includeWhiteboard ? true : undefined
-          }
-        }
+      const response = await fetch('/api/insights/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          papers: selectedPapers.length > 0 ? selectedPapers : undefined,
+          notes: includeNotes ? true : undefined,
+          whiteboard: includeWhiteboard ? true : undefined
+        })
       });
       
-      if (error) throw error;
+      if (!response.ok) throw new Error('Failed to generate insights');
       
-      // Process the insights from the response
-      const answer = data.answer;
-      
-      // Extract insights from the response by parsing sections
-      const insightSections = answer.split(/(?=##)|(?=#\s)/g)
-        .filter(section => section.trim())
-        .map(section => {
-          const titleMatch = section.match(/^##+\s*(.+)$/m);
-          const title = titleMatch ? titleMatch[1].trim() : "Research Insight";
-          const content = section.replace(/^##+\s*.+$/m, "").trim();
-          return { title, content };
-        });
-      
-      setInsights(insightSections.length > 0 ? insightSections : [
-        { title: "Research Insight", content: answer }
-      ]);
-      
-      setResponse(data);
-      
+      const data = await response.json();
+      processInsights(data);
     } catch (error) {
       console.error("Error generating insights:", error);
       toast({
@@ -196,7 +146,7 @@ export default function Insights() {
       setLoading(false);
     }
   };
-  
+
   const handleSubmitQuestion = async () => {
     if (!query.trim()) return;
     
@@ -204,21 +154,23 @@ export default function Insights() {
     setResponse(null);
     
     try {
-      const { data, error } = await supabase.functions.invoke('stressy-bot', {
-        body: {
+      const response = await fetch('/api/insights/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           query,
           context: {
             papers: selectedPapers.length > 0 ? selectedPapers : undefined,
             notes: includeNotes ? true : undefined,
             whiteboard: includeWhiteboard ? true : undefined
           }
-        }
+        })
       });
       
-      if (error) throw error;
+      if (!response.ok) throw new Error('Failed to get response');
       
+      const data = await response.json();
       setResponse(data);
-      
     } catch (error) {
       console.error("Error submitting question:", error);
       toast({
@@ -229,6 +181,27 @@ export default function Insights() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const processInsights = (data: any) => {
+    // Process the insights from the response
+    const answer = data.answer;
+    
+    // Extract insights from the response by parsing sections
+    const insightSections = answer.split(/(?=##)|(?=#\s)/g)
+      .filter(section => section.trim())
+      .map(section => {
+        const titleMatch = section.match(/^##+\s*(.+)$/m);
+        const title = titleMatch ? titleMatch[1].trim() : "Research Insight";
+        const content = section.replace(/^##+\s*.+$/m, "").trim();
+        return { title, content };
+      });
+    
+    setInsights(insightSections.length > 0 ? insightSections : [
+      { title: "Research Insight", content: answer }
+    ]);
+    
+    setResponse(data);
   };
 
   // Format bytes to human-readable format

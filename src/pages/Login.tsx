@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -7,7 +6,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/lib/supabase";
 import { Book, Mail, Lock, User } from "lucide-react";
 
 export default function Login() {
@@ -23,12 +21,13 @@ export default function Login() {
     setLoading(true);
     
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
       });
       
-      if (error) throw error;
+      if (!response.ok) throw new Error('Login failed');
       
       toast({
         title: "Sign in successful!",
@@ -53,17 +52,13 @@ export default function Login() {
     setLoading(true);
     
     try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name,
-          },
-        },
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name })
       });
       
-      if (error) throw error;
+      if (!response.ok) throw new Error('Registration failed');
       
       toast({
         title: "Account created!",

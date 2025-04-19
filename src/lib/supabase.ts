@@ -1,9 +1,9 @@
 
-// Mock authentication functions for frontend-only development
+// Mock service that matches future FastAPI endpoint structure
 export const supabase = {
   auth: {
     getSession: async () => ({ 
-      data: { session: { user: { id: 'mock-user-id' } } }, 
+      data: { session: null }, 
       error: null 
     }),
     onAuthStateChange: () => ({
@@ -14,20 +14,24 @@ export const supabase = {
       }
     })
   },
-  storage: {
-    from: () => ({
-      upload: async () => ({ error: null }),
-      remove: async () => ({ error: null })
-    })
-  },
-  from: () => ({
-    delete: async () => ({ error: null }),
-    select: async () => ({ 
-      data: [], 
-      error: null 
+  // Mock paper management endpoints
+  from: (table: string) => ({
+    select: () => ({
+      data: [],
+      error: null
+    }),
+    delete: () => ({
+      error: null
     })
   }),
+  storage: {
+    from: (bucket: string) => ({
+      upload: async (path: string, file: File) => ({ error: null }),
+      remove: async (path: string) => ({ error: null })
+    })
+  },
   functions: {
-    invoke: async () => ({ error: null })
+    invoke: async (name: string) => ({ error: null })
   }
 };
+
