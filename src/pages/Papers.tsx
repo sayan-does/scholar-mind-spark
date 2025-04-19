@@ -1,14 +1,11 @@
-
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { FileText, Trash, Search, File, Upload, AlertCircle } from "lucide-react";
+import { FileText, Trash, Search, File } from "lucide-react";
 import { FileUploader } from "@/components/FileUploader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "@/lib/supabase";
-import { v4 as uuidv4 } from "uuid";
 import { useNavigate } from "react-router-dom";
 
 type PaperFile = {
@@ -16,74 +13,17 @@ type PaperFile = {
   name: string;
   size: number;
   uploaded: Date;
-  processing?: boolean;
   tags?: string[];
 }
 
 export default function Papers() {
   const [papers, setPapers] = useState<PaperFile[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [totalStorage, setTotalStorage] = useState<number>(0); // in bytes
-  const [loading, setLoading] = useState(true);
+  const [totalStorage, setTotalStorage] = useState<number>(0);
+  const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  
-  // Fetch user's papers on component mount
-  useEffect(() => {
-    fetchPapers();
-  }, []);
-  
-  const fetchPapers = async () => {
-    try {
-      setLoading(true);
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      
-      if (sessionError) {
-        throw sessionError;
-      }
-      
-      if (!sessionData.session) {
-        navigate("/login");
-        return;
-      }
-      
-      const { data, error } = await supabase
-        .from('papers')
-        .select('*')
-        .order('created_at', { ascending: false });
-        
-      if (error) {
-        throw error;
-      }
-      
-      // Calculate total storage
-      let storageTotal = 0;
-      
-      const formattedPapers: PaperFile[] = data.map(paper => {
-        storageTotal += paper.size || 0;
-        return {
-          id: paper.id,
-          name: paper.name,
-          size: paper.size || 0,
-          uploaded: new Date(paper.created_at),
-          tags: paper.tags
-        };
-      });
-      
-      setPapers(formattedPapers);
-      setTotalStorage(storageTotal);
-    } catch (error) {
-      console.error("Error fetching papers:", error);
-      toast({
-        variant: "destructive",
-        title: "Error fetching papers",
-        description: error.message || "Failed to load your research papers."
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleFilesChange = async (files: File[]) => {
     if (files.length === 0) return;
@@ -91,65 +31,27 @@ export default function Papers() {
     setUploading(true);
     
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
-        navigate("/login");
-        return;
-      }
+      // Create new paper entries with local data
+      const newPapers: PaperFile[] = files.map(file => ({
+        id: Math.random().toString(36).substr(2, 9),
+        name: file.name,
+        size: file.size,
+        uploaded: new Date(),
+      }));
       
-      const user = sessionData.session.user;
-      const uploadPromises = files.map(async (file) => {
-        const fileId = uuidv4();
-        const fileName = file.name;
-        
-        // First upload the file to storage
-        const { error: uploadError } = await supabase.storage
-          .from('papers')
-          .upload(`${user.id}/${fileId}`, file);
-          
-        if (uploadError) {
-          throw uploadError;
-        }
-        
-        // Temporarily add to UI
-        const newPaper: PaperFile = {
-          id: fileId,
-          name: fileName,
-          size: file.size,
-          uploaded: new Date(),
-          processing: true
-        };
-        
-        setPapers(prev => [newPaper, ...prev]);
-        setTotalStorage(prev => prev + file.size);
-        
-        // Now process the PDF to extract text and create embeddings
-        const { error: processError } = await supabase.functions.invoke('process-pdf', {
-          body: { fileId, fileName }
-        });
-        
-        if (processError) {
-          throw processError;
-        }
-        
-        return { id: fileId, success: true };
-      });
-      
-      await Promise.all(uploadPromises);
+      setPapers(prev => [...newPapers, ...prev]);
+      setTotalStorage(prev => prev + files.reduce((acc, file) => acc + file.size, 0));
       
       toast({
         title: "Papers uploaded successfully",
-        description: `${files.length} ${files.length === 1 ? 'paper' : 'papers'} uploaded and processed.`
+        description: `${files.length} ${files.length === 1 ? 'paper' : 'papers'} uploaded.`
       });
-      
-      // Refresh the papers list to get the updated data
-      fetchPapers();
     } catch (error) {
       console.error("Error uploading papers:", error);
       toast({
         variant: "destructive",
         title: "Error uploading papers",
-        description: error.message || "Failed to upload your research papers."
+        description: "Failed to upload your research papers."
       });
     } finally {
       setUploading(false);
@@ -161,34 +63,8 @@ export default function Papers() {
       const paperToDelete = papers.find(paper => paper.id === id);
       if (!paperToDelete) return;
       
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
-        navigate("/login");
-        return;
-      }
-      
-      // Delete from storage
-      const { error: storageError } = await supabase.storage
-        .from('papers')
-        .remove([`${sessionData.session.user.id}/${id}`]);
-        
-      if (storageError) {
-        throw storageError;
-      }
-      
-      // Delete from database
-      const { error: dbError } = await supabase
-        .from('papers')
-        .delete()
-        .eq('id', id);
-        
-      if (dbError) {
-        throw dbError;
-      }
-      
-      // Update UI
-      setTotalStorage(prevStorage => prevStorage - paperToDelete.size);
       setPapers(prevPapers => prevPapers.filter(paper => paper.id !== id));
+      setTotalStorage(prevStorage => prevStorage - (paperToDelete.size || 0));
       
       toast({
         title: "Paper deleted",
@@ -199,7 +75,7 @@ export default function Papers() {
       toast({
         variant: "destructive",
         title: "Error deleting paper",
-        description: error.message || "Failed to delete the research paper."
+        description: "Failed to delete the research paper."
       });
     }
   };
@@ -216,7 +92,6 @@ export default function Papers() {
     paper.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Format bytes to human-readable format
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -276,12 +151,6 @@ export default function Papers() {
                           <span className="font-medium">{paper.name}</span>
                           <div className="text-xs text-muted-foreground">
                             {formatBytes(paper.size)} • Uploaded {paper.uploaded.toLocaleDateString()}
-                            {paper.processing && (
-                              <span className="ml-2 text-amber-500 flex items-center">
-                                <AlertCircle className="h-3 w-3 mr-1" />
-                                Processing
-                              </span>
-                            )}
                           </div>
                         </div>
                       </div>
